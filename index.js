@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const jwt = require("jsonwebtoken");
 const { MongoClient } = require("mongodb");
 require("dotenv").config();
 const port = process.env.PORT || 5000;
@@ -13,6 +14,30 @@ app.use(express.json());
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster-1.yey930g.mongodb.net/?retryWrites=true&w=majority`;
 const client = new MongoClient(uri);
 
+
+// verify json web token that comes in headers of an api call
+function verifyJWT(req, res, next) {
+  const authorizationHeader = req.headers?.authorization;
+  
+  if (!authorizationHeader) {
+    return res.status(401).send({message: "Unauthorized Access"});
+  }
+
+  const token = authorizationHeader.split(" ")[1];
+
+  // verify token
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, function(err, decoded) {
+    if (err) {
+      return res.status(403).send({message: "Access Forbidden"});
+    }
+    // set the decoded information to the req object
+    req.decoded = decoded;
+    // call the next handler
+    next();
+  })
+}
+
+
 async function run() {
   try {
     // collections
@@ -20,6 +45,7 @@ async function run() {
       .db("doctors_Portal")
       .collection("appointment_Options");
     const bookings = client.db("doctors_Portal").collection("bookings");
+    const users = client.db("doctors_Portal").collection("users");
 
     // get appointmentOptions
     app.get("/appointment-options", async (req, res) => {
@@ -57,53 +83,111 @@ async function run() {
     app.get("/v2/appointment-options", async (req, res) => {
       const date = req.query.date;
 
-      const appointmentOptionsArr = await appointmentOptions.aggregate([
-        {
-          $lookup: {
-            from: "bookings",
-            localField: "name",
-            foreignField: "treatment",
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $eq: ["$appointmentDate", date],
+      const appointmentOptionsArr = await appointmentOptions
+        .aggregate([
+          {
+            $lookup: {
+              from: "bookings",
+              localField: "name",
+              foreignField: "treatment",
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $eq: ["$appointmentDate", date],
+                    },
                   },
                 },
-              },
-            ],
-            as: "bookingsByAppointmentOption",
+              ],
+              as: "bookingsByAppointmentOption",
+            },
           },
-        },
-        {
-          $project: {
-            name: 1,
-            slots: 1,
-            bookedSlots: {
-              $map: {
-                input: "$bookingsByAppointmentOption",
-                as: "booking",
-                in: "$$booking.slot",
+          {
+            $project: {
+              name: 1,
+              slots: 1,
+              bookedSlots: {
+                $map: {
+                  input: "$bookingsByAppointmentOption",
+                  as: "booking",
+                  in: "$$booking.slot",
+                },
               },
             },
           },
-        },
-        {
-          $project: {
-            name: 1,
-            slots: {
-              $setDifference: ["$slots", "$bookedSlots"],
+          {
+            $project: {
+              name: 1,
+              slots: {
+                $setDifference: ["$slots", "$bookedSlots"],
+              },
             },
           },
-        },
-      ]).toArray();
+        ])
+        .toArray();
       res.send(appointmentOptionsArr);
+    });
+
+    // get bookings
+    app.get("/bookings", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+      const decoded = req.decoded;
+      if (decoded.email !== email) {
+        return res.status(403).send({message: "Access Forbidden"});
+      }
+      const query = { email };
+      const result = await bookings.find(query).toArray();
+      res.send(result);
     });
 
     // create new booking
     app.post("/bookings", async (req, res) => {
       const booking = req.body;
+      // limit number of bookings for
+      const query = {
+        appointmentDate: booking.appointmentDate,
+        email: booking.email,
+        treatment: booking.treatment,
+      };
+      const bookingsArr = await bookings.find(query).toArray();
+      if (bookingsArr.length) {
+        return res.send({
+          acknowledged: false,
+          message: `Already have a booking for ${booking.treatment} in ${booking.appointmentDate}.`,
+        });
+      }
       const result = await bookings.insertOne(booking);
+      res.send(result);
+    });
+
+    // get user information to sign a jwt token
+    app.get("/jwt", async (req, res) => {
+      const email = req.query.email;
+
+      // check if the user exists in db
+      const user = await users.findOne({ email });
+      if (user) {
+        const token = jwt.sign({ email }, process.env.ACCESS_TOKEN_SECRET, {
+          expiresIn: "2 days",
+        });
+        return res.send({ accessToken: token });
+      }
+
+      // if user doesn't exist in db
+      res.status(403).send({ accessToken: "" });
+    });
+
+    // get users
+    app.get("/users", async (req, res) => {
+      const query = {};
+      const result = await users.find(query).toArray();
+      res.send(result);
+    })
+
+    // save user to db
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+      const result = await users.insertOne(user);
       res.send(result);
     });
   } finally {
