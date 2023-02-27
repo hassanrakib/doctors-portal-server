@@ -53,6 +53,53 @@ async function run() {
       res.send(appointmentOptionsArr);
     });
 
+    // next version of the appointmentOptions api
+    app.get("/v2/appointment-options", async (req, res) => {
+      const date = req.query.date;
+
+      const appointmentOptionsArr = await appointmentOptions.aggregate([
+        {
+          $lookup: {
+            from: "bookings",
+            localField: "name",
+            foreignField: "treatment",
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $eq: ["$appointmentDate", date],
+                  },
+                },
+              },
+            ],
+            as: "bookingsByAppointmentOption",
+          },
+        },
+        {
+          $project: {
+            name: 1,
+            slots: 1,
+            bookedSlots: {
+              $map: {
+                input: "$bookingsByAppointmentOption",
+                as: "booking",
+                in: "$$booking.slot",
+              },
+            },
+          },
+        },
+        {
+          $project: {
+            name: 1,
+            slots: {
+              $setDifference: ["$slots", "$bookedSlots"],
+            },
+          },
+        },
+      ]).toArray();
+      res.send(appointmentOptionsArr);
+    });
+
     // create new booking
     app.post("/bookings", async (req, res) => {
       const booking = req.body;
