@@ -44,6 +44,7 @@ async function run() {
       .collection("appointment_Options");
     const bookings = client.db("doctors_Portal").collection("bookings");
     const users = client.db("doctors_Portal").collection("users");
+    const doctors = client.db("doctors_Portal").collection("doctors");
 
     // get appointmentOptions
     app.get("/appointment-options", async (req, res) => {
@@ -126,6 +127,16 @@ async function run() {
       res.send(appointmentOptionsArr);
     });
 
+    // get specialties
+    app.get("/specialties", async (req, res) => {
+      const query = {};
+      const result = await appointmentOptions
+        .find(query)
+        .project({ name: 1 })
+        .toArray();
+      res.send(result);
+    });
+
     // get bookings
     app.get("/bookings", verifyJWT, async (req, res) => {
       const email = req.query.email;
@@ -189,14 +200,23 @@ async function run() {
       res.send(result);
     });
 
+    // check if a user is admin
+    app.get("/users/admin/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+
+      const user = await users.findOne(query);
+      res.send({ isAdmin: user?.role === "admin" });
+    });
+
     // make a user admin
     // before that ensuring that the user with role admin only can make others admin
-    app.put("/users/make-admin/:id", verifyJWT, async (req, res) => {
+    app.put("/users/admin/:id", verifyJWT, async (req, res) => {
       const decodedEmail = req.decoded.email;
       const query = { email: decodedEmail };
       const currentLoggedInUser = await users.findOne(query);
 
-      if (currentLoggedInUser.role !== admin) {
+      if (currentLoggedInUser.role !== "admin") {
         return res.status(403).send({ message: "Access Forbidden" });
       }
 
@@ -210,6 +230,28 @@ async function run() {
       const result = await users.updateOne(filter, updateDoc, options);
       res.send(result);
     });
+
+    // get doctors
+    app.get("/doctors", async (req, res) => {
+      const query = {};
+      const result = await doctors.find(query).toArray();
+      res.send(result);
+    });
+
+    // add new doctor to doctors collection
+    app.post("/doctors", async (req, res) => {
+      const newDoctor = req.body;
+      const result = await doctors.insertOne(newDoctor);
+      res.send(result);
+    });
+
+    // delete a doctor
+    app.delete("/doctors/:id", async (req, res) => {
+      const query = { _id: new ObjectId(req.params.id) };
+      const result = await doctors.deleteOne(query);
+      res.send(result);
+    });
+    
   } finally {
     // await client.close();
   }
