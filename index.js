@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { MongoClient, ObjectId } = require("mongodb");
 require("dotenv").config();
 const port = process.env.PORT || 5000;
@@ -45,6 +46,20 @@ async function run() {
     const bookings = client.db("doctors_Portal").collection("bookings");
     const users = client.db("doctors_Portal").collection("users");
     const doctors = client.db("doctors_Portal").collection("doctors");
+
+    // use verifyAdmin middleware after verifyJWT to get the req.decoded object
+    const verifyAdmin = async (req, res, next) => {
+      const decodedEmail = req.decoded.email;
+      const query = { email: decodedEmail };
+      const currentLoggedInUser = await users.findOne(query);
+
+      if (currentLoggedInUser.role !== "admin") {
+        return res.status(403).send({ message: "Access Forbidden" });
+      }
+
+      // go to the next handler if the user is an admin
+      next();
+    };
 
     // get appointmentOptions
     app.get("/appointment-options", async (req, res) => {
@@ -105,6 +120,7 @@ async function run() {
             $project: {
               name: 1,
               slots: 1,
+              price: 1,
               bookedSlots: {
                 $map: {
                   input: "$bookingsByAppointmentOption",
@@ -117,6 +133,7 @@ async function run() {
           {
             $project: {
               name: 1,
+              price: 1,
               slots: {
                 $setDifference: ["$slots", "$bookedSlots"],
               },
@@ -126,6 +143,19 @@ async function run() {
         .toArray();
       res.send(appointmentOptionsArr);
     });
+
+    // temporary operation to update price field in appointmentOptions
+    /* app.get("/temporary/add-price-field", async (req, res) => {
+      const filter = {};
+      const updateDoc = {
+        $set: {
+          price: 99,
+        },
+      };
+      const result = await appointmentOptions.updateMany(filter, updateDoc);
+      console.log(`Updated ${result.modifiedCount} documents`);
+      res.send({modifiedCount: result.modifiedCount})
+    }); */
 
     // get specialties
     app.get("/specialties", async (req, res) => {
@@ -137,7 +167,7 @@ async function run() {
       res.send(result);
     });
 
-    // get bookings
+    // get bookings by query email
     app.get("/bookings", verifyJWT, async (req, res) => {
       const email = req.query.email;
       const decoded = req.decoded;
@@ -146,6 +176,13 @@ async function run() {
       }
       const query = { email };
       const result = await bookings.find(query).toArray();
+      res.send(result);
+    });
+
+    // get a specif booking by id
+    app.get("/bookings/:id", verifyJWT, async (req, res) => {
+      const query = { _id: new ObjectId(req.params.id) };
+      const result = await bookings.findOne(query);
       res.send(result);
     });
 
@@ -167,6 +204,22 @@ async function run() {
       }
       const result = await bookings.insertOne(booking);
       res.send(result);
+    });
+
+    // create a PaymentIntent
+    app.post("/create-payment-intent", verifyJWT, async (req, res) => {
+      const booking = req.body;
+      const amount = booking.price * 100; // stripe takes amount in cents
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount,
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
     });
 
     // get user information to sign a jwt token
@@ -211,15 +264,7 @@ async function run() {
 
     // make a user admin
     // before that ensuring that the user with role admin only can make others admin
-    app.put("/users/admin/:id", verifyJWT, async (req, res) => {
-      const decodedEmail = req.decoded.email;
-      const query = { email: decodedEmail };
-      const currentLoggedInUser = await users.findOne(query);
-
-      if (currentLoggedInUser.role !== "admin") {
-        return res.status(403).send({ message: "Access Forbidden" });
-      }
-
+    app.put("/users/admin/:id", verifyJWT, verifyAdmin, async (req, res) => {
       const filter = { _id: new ObjectId(req.params.id) };
       const options = { upsert: true };
       const updateDoc = {
@@ -232,26 +277,25 @@ async function run() {
     });
 
     // get doctors
-    app.get("/doctors", async (req, res) => {
+    app.get("/doctors", verifyJWT, verifyAdmin, async (req, res) => {
       const query = {};
       const result = await doctors.find(query).toArray();
       res.send(result);
     });
 
     // add new doctor to doctors collection
-    app.post("/doctors", async (req, res) => {
+    app.post("/doctors", verifyJWT, verifyAdmin, async (req, res) => {
       const newDoctor = req.body;
       const result = await doctors.insertOne(newDoctor);
       res.send(result);
     });
 
     // delete a doctor
-    app.delete("/doctors/:id", async (req, res) => {
+    app.delete("/doctors/:id", verifyJWT, verifyAdmin, async (req, res) => {
       const query = { _id: new ObjectId(req.params.id) };
       const result = await doctors.deleteOne(query);
       res.send(result);
     });
-    
   } finally {
     // await client.close();
   }
